@@ -23,16 +23,6 @@ struct TypedCells {
 
     template <typename T> bool check_type() const { return vespalib::eval::check_cell_type<T>(type); }
 
-    static size_t size_of_each_cell(CellType ct) {
-        switch (ct) {
-        case ValueType::CellType::DOUBLE: return sizeof(double);
-        case ValueType::CellType::FLOAT: return sizeof(float);
-        }
-        abort();
-    }
-
-    size_t size_of_each_cell() const { return size_of_each_cell(type); }
-
     template <typename T> ConstArrayRef<T> typify() const {
         assert(check_type<T>());
         return ConstArrayRef<T>((const T *)data, size);

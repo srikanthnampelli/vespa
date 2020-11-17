@@ -1,9 +1,10 @@
 // Copyright 2017 Yahoo Holdings. Licensed under the terms of the Apache 2.0 license. See LICENSE in the project root.
 
-#include "blob_sequence_reader.h"
 #include "serialized_tensor_attribute.h"
-#include "serialized_tensor_attribute_saver.h"
+#include "streamed_value_saver.h"
 #include "tensor_attribute.hpp"
+#include "blob_sequence_reader.h"
+#include "tensor_deserialize.h"
 #include <vespa/eval/eval/value.h>
 #include <vespa/fastlib/io/bufferedfile.h>
 #include <vespa/searchlib/attribute/readerbase.h>
@@ -22,7 +23,8 @@ constexpr uint32_t TENSOR_ATTRIBUTE_VERSION = 0;
 }
 
 SerializedTensorAttribute::SerializedTensorAttribute(stringref name, const Config &cfg)
-    : TensorAttribute(name, cfg, _serializedTensorStore)
+  : TensorAttribute(name, cfg, _serializedTensorStore),
+    _serializedTensorStore(cfg.tensorType())
 {
 }
 
@@ -37,7 +39,7 @@ void
 SerializedTensorAttribute::setTensor(DocId docId, const vespalib::eval::Value &tensor)
 {
     checkTensorType(tensor);
-    EntryRef ref = _serializedTensorStore.setTensor(tensor);
+    EntryRef ref = _serializedTensorStore.store_tensor(tensor);
     setTensorRef(docId, ref);
 }
 
@@ -52,7 +54,9 @@ SerializedTensorAttribute::getTensor(DocId docId) const
     if (!ref.valid()) {
         return {};
     }
-    return _serializedTensorStore.getTensor(ref);
+    vespalib::nbostream buffer;
+    _serializedTensorStore.encode_tensor(ref, buffer);
+    return deserialize_tensor(buffer);
 }
 
 bool
@@ -67,13 +71,22 @@ SerializedTensorAttribute::onLoad()
     uint32_t numDocs(tensorReader.getDocIdLimit());
     _refVector.reset();
     _refVector.unsafe_reserve(numDocs);
+
+    vespalib::Array<char> buffer(1024);
     for (uint32_t lid = 0; lid < numDocs; ++lid) {
         uint32_t tensorSize = tensorReader.getNextSize();
-        auto raw = _serializedTensorStore.allocRawBuffer(tensorSize);
         if (tensorSize != 0) {
-            tensorReader.readBlob(raw.data, tensorSize);
+            if (tensorSize > buffer.size()) {
+                buffer.resize(tensorSize + 1024);
+            }
+            tensorReader.readBlob(&buffer[0], tensorSize);
+            vespalib::nbostream source(&buffer[0], tensorSize);
+            EntryRef ref = _serializedTensorStore.store_encoded_tensor(source);
+            _refVector.push_back(ref);
+        } else {
+            EntryRef invalid;
+            _refVector.push_back(invalid);
         }
-        _refVector.push_back(raw.ref);
     }
     setNumDocs(numDocs);
     setCommittedDocIdLimit(numDocs);
@@ -86,7 +99,7 @@ SerializedTensorAttribute::onInitSave(vespalib::stringref fileName)
 {
     vespalib::GenerationHandler::Guard guard(getGenerationHandler().
                                              takeGuard());
-    return std::make_unique<SerializedTensorAttributeSaver>
+    return std::make_unique<StreamedValueSaver>
         (std::move(guard),
          this->createAttributeHeader(fileName),
          getRefCopy(),
@@ -96,7 +109,7 @@ SerializedTensorAttribute::onInitSave(vespalib::stringref fileName)
 void
 SerializedTensorAttribute::compactWorst()
 {
-    doCompactWorst<SerializedTensorStore::RefType>();
+    doCompactWorst<StreamedValueStore::RefType>();
 }
 
 }
